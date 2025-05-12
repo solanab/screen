@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0, user-scalable=no"
+        />
+        <title>屏幕常亮时钟 (纯黑)</title>
+        <style>
+            :root {
+                --bg-color: #000000;
+                --text-color-light: #e0e0e0;
+                --text-color-dim: #888888;
+                --text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.7);
+                --button-bg: rgba(35, 35, 35, 0.7);
+                --button-hover-bg: rgba(60, 60, 60, 0.8);
+                --button-disabled-bg: rgba(20, 20, 20, 0.5);
+                --button-text: #cccccc;
+                --warning-color: #ff8f00; /* Amber */
+            }
+
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue",
+                    sans-serif;
+                background-color: var(--bg-color);
+                color: var(--text-color-dim);
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                margin: 0;
+                text-align: center;
+                padding: 20px;
+                box-sizing: border-box;
+                overflow: hidden;
+            }
+
+            #content-container {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                flex-grow: 1;
+                width: 100%;
+            }
+
+            #clock {
+                font-size: clamp(5rem, 20vw, 12rem);
+                font-weight: 200;
+                color: var(--text-color-light);
+                text-shadow: var(--text-shadow);
+                margin-bottom: 30px;
+                line-height: 1;
+            }
+
+            .controls {
+                /* This is #controlsContainer */
+                display: flex;
+                flex-direction: column; /* Elements inside will stack vertically */
+                align-items: center; /* Elements inside will be centered horizontally */
+                position: absolute;
+                bottom: 30px;
+                left: 50%;
+                transform: translateX(-50%);
+                width: 90%;
+                max-width: 500px;
+                opacity: 1;
+                visibility: visible;
+                transition:
+                    opacity 0.5s ease-in-out,
+                    visibility 0.5s ease-in-out;
+                z-index: 10;
+                padding: 10px; /* Add some padding so content isn't at the very edge */
+                box-sizing: border-box;
+            }
+
+            .controls.hidden {
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+            }
+
+            #button-group {
+                display: flex;
+                justify-content: center;
+                gap: 15px;
+                /* No specific margin needed here as .controls handles overall positioning */
+                /* position: relative;  Not needed anymore */
+                width: 100%; /* Allow button group to take available width for centering */
+                margin-bottom: 10px; /* Space between button group and warning */
+            }
+
+            button {
+                background-color: var(--button-bg);
+                color: var(--button-text);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                padding: 10px 20px;
+                font-size: 0.85em;
+                border-radius: 20px;
+                cursor: pointer;
+                transition:
+                    background-color 0.3s ease,
+                    border-color 0.3s ease;
+                backdrop-filter: blur(3px);
+                -webkit-backdrop-filter: blur(3px);
+            }
+
+            button:hover:not(:disabled) {
+                background-color: var(--button-hover-bg);
+                border-color: rgba(255, 255, 255, 0.2);
+            }
+
+            button:disabled {
+                background-color: var(--button-disabled-bg);
+                color: #666;
+                cursor: not-allowed;
+                border-color: rgba(255, 255, 255, 0.05);
+            }
+
+            .warning {
+                /* Now a normal flow item within .controls */
+                font-size: 0.75em;
+                color: var(--warning-color);
+                /* Removed absolute positioning properties */
+                width: 100%; /* Take width of its container (.controls content area) */
+                max-width: 450px; /* Or a bit less than .controls max-width */
+                text-align: center; /* Ensure text itself is centered if width is fixed */
+                margin-top: 5px; /* Space above warning if button group also has margin-bottom */
+            }
+        </style>
+    </head>
+    <body>
+        <div id="content-container">
+            <div id="clock">00:00:00</div>
+        </div>
+
+        <div id="controlsContainer" class="controls">
+            <div id="button-group">
+                <button id="toggleFullScreenBtn">进入全屏</button>
+            </div>
+            <p class="warning">
+                <b>警告:</b> 长时间显示可能导致 OLED 烧屏。请务必降低屏幕亮度。
+            </p>
+        </div>
+
+        <script>
+            const clockDiv = document.getElementById("clock");
+            const fullScreenBtn = document.getElementById(
+                "toggleFullScreenBtn",
+            );
+            const controlsContainer =
+                document.getElementById("controlsContainer");
+
+            let wakeLock = null;
+            let wakeLockActive = false;
+
+            let inactivityTimer;
+            const INACTIVITY_TIMEOUT_MS = 3000; // 3 seconds
+
+            // --- Clock Logic ---
+            function formatTime(num) {
+                return num < 10 ? "0" + num : num;
+            }
+
+            function updateClock() {
+                const now = new Date();
+                const hours = formatTime(now.getHours());
+                const minutes = formatTime(now.getMinutes());
+                const seconds = formatTime(now.getSeconds());
+                clockDiv.textContent = `${hours}:${minutes}:${seconds}`;
+            }
+
+            // --- Screen Wake Lock Logic ---
+            async function requestWakeLock() {
+                if (!("wakeLock" in navigator)) {
+                    console.warn("浏览器不支持屏幕唤醒锁定 API。");
+                    return;
+                }
+                try {
+                    if (wakeLock && wakeLockActive) {
+                        console.log("屏幕常亮已激活 (已有锁)");
+                        return;
+                    }
+                    wakeLock = await navigator.wakeLock.request("screen");
+                    wakeLockActive = true;
+                    console.log("屏幕常亮已激活。");
+                    wakeLock.addEventListener("release", () => {
+                        console.log("屏幕常亮被释放 (来自浏览器事件)。");
+                        wakeLockActive = false;
+                        wakeLock = null;
+                        if (document.visibilityState === "visible") {
+                            console.log("页面可见, 尝试重新获取屏幕常亮...");
+                            requestWakeLock();
+                        }
+                    });
+                } catch (err) {
+                    wakeLockActive = false;
+                    wakeLock = null;
+                    console.error(
+                        `激活屏幕常亮失败: ${err.name}, ${err.message}`,
+                    );
+                }
+            }
+
+            // --- Fullscreen Logic ---
+            function isFullScreen() {
+                return (
+                    document.fullscreenElement ||
+                    document.webkitFullscreenElement ||
+                    document.mozFullScreenElement ||
+                    document.msFullscreenElement
+                );
+            }
+
+            function enterFullScreen() {
+                const elem = document.documentElement;
+                if (elem.requestFullscreen)
+                    elem.requestFullscreen().catch((err) =>
+                        console.error(`FS Error: ${err.message}`),
+                    );
+                else if (elem.webkitRequestFullscreen)
+                    elem.webkitRequestFullscreen().catch((err) =>
+                        console.error(`FS Error: ${err.message}`),
+                    );
+                else if (elem.mozRequestFullScreen)
+                    elem.mozRequestFullScreen().catch((err) =>
+                        console.error(`FS Error: ${err.message}`),
+                    );
+                else if (elem.msRequestFullscreen)
+                    elem.msRequestFullscreen().catch((err) =>
+                        console.error(`FS Error: ${err.message}`),
+                    );
+            }
+
+            function exitFullScreen() {
+                if (document.exitFullscreen)
+                    document
+                        .exitFullscreen()
+                        .catch((err) =>
+                            console.error(`FS Error: ${err.message}`),
+                        );
+                else if (document.webkitExitFullscreen)
+                    document
+                        .webkitExitFullscreen()
+                        .catch((err) =>
+                            console.error(`FS Error: ${err.message}`),
+                        );
+                else if (document.mozCancelFullScreen)
+                    document
+                        .mozCancelFullScreen()
+                        .catch((err) =>
+                            console.error(`FS Error: ${err.message}`),
+                        );
+                else if (document.msExitFullscreen)
+                    document
+                        .msExitFullscreen()
+                        .catch((err) =>
+                            console.error(`FS Error: ${err.message}`),
+                        );
+            }
+
+            function toggleFullScreen() {
+                if (!isFullScreen()) {
+                    enterFullScreen();
+                } else {
+                    exitFullScreen();
+                }
+            }
+
+            fullScreenBtn.addEventListener("click", (event) => {
+                event.stopPropagation();
+                toggleFullScreen();
+            });
+
+            function updateFullScreenButton() {
+                if (isFullScreen()) {
+                    fullScreenBtn.textContent = "退出全屏";
+                } else {
+                    fullScreenBtn.textContent = "进入全屏";
+                }
+            }
+            document.addEventListener(
+                "fullscreenchange",
+                updateFullScreenButton,
+            );
+            document.addEventListener(
+                "webkitfullscreenchange",
+                updateFullScreenButton,
+            );
+            document.addEventListener(
+                "mozfullscreenchange",
+                updateFullScreenButton,
+            );
+            document.addEventListener(
+                "MSFullscreenChange",
+                updateFullScreenButton,
+            );
+
+            // --- Inactivity Logic for Controls ---
+            function hideControls() {
+                controlsContainer.classList.add("hidden");
+                console.log("Controls hidden due to inactivity.");
+            }
+
+            function showControlsAndResetTimer() {
+                controlsContainer.classList.remove("hidden");
+                clearTimeout(inactivityTimer);
+                inactivityTimer = setTimeout(
+                    hideControls,
+                    INACTIVITY_TIMEOUT_MS,
+                );
+                console.log("Controls shown, inactivity timer reset.");
+            }
+
+            document.addEventListener("click", showControlsAndResetTimer);
+
+            // --- Initial Setup ---
+            updateClock();
+            updateFullScreenButton();
+            setInterval(updateClock, 1000);
+
+            if ("wakeLock" in navigator) {
+                requestWakeLock();
+                document.addEventListener("visibilitychange", () => {
+                    if (
+                        document.visibilityState === "visible" &&
+                        !wakeLockActive
+                    ) {
+                        console.log("页面变为可见, 尝试获取屏幕常亮...");
+                        requestWakeLock();
+                    } else if (
+                        document.visibilityState === "hidden" &&
+                        wakeLock &&
+                        wakeLockActive
+                    ) {
+                        console.log("页面已隐藏, 浏览器应自动释放屏幕常亮。");
+                    }
+                });
+            } else {
+                console.warn(
+                    "此浏览器不支持屏幕唤醒锁定 API，屏幕可能会自动关闭。",
+                );
+                const warningContainer = document.querySelector(
+                    "#controlsContainer .warning",
+                ); // More specific selector
+                if (warningContainer) {
+                    let noSupportMsg = warningContainer.querySelector(
+                        ".no-wakelock-support",
+                    );
+                    if (!noSupportMsg) {
+                        noSupportMsg = document.createElement("span");
+                        noSupportMsg.textContent =
+                            " (提示: 浏览器不支持自动防锁屏)";
+                        noSupportMsg.style.fontSize = "0.8em"; // Relative to parent .warning font-size
+                        noSupportMsg.style.opacity = "0.7";
+                        noSupportMsg.className = "no-wakelock-support";
+                        warningContainer.appendChild(noSupportMsg);
+                    }
+                }
+            }
+
+            showControlsAndResetTimer();
+        </script>
+    </body>
+</html>
